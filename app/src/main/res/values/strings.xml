@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">xDocUI</string>
+    <string name="app_description">Bypasses data/obb restrictions + Forces the file picker to remember your sort. \nBy @RHineIx</string>
+</resources>
