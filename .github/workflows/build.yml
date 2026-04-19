@@ -1,47 +1,86 @@
-name: Build and Release
+name: 🚀 Build & Release xDocUI
 
 on:
   workflow_dispatch:
     inputs:
-      release_notes:
-        description: 'Release Notes (Optional)'
-        required: false
-        type: string
+      release_type:
+        description: '📦 Select Release Channel'
+        required: true
+        default: 'stable'
+        type: choice
+        options:
+          - stable
+          - pre-release
+
+permissions:
+  contents: write
+
+# Cancel any previous runs of this workflow on the same branch to save runner minutes
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-release:
+    name: 🔨 Build and Publish
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # Required permission to create tags and releases
+    timeout-minutes: 15 # Prevent hanging workflows
 
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required for auto-generating release notes
 
-      - name: Setup Java 21
+      - name: ☕ Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '21'
-          cache: 'gradle'
+          distribution: 'temurin'
 
-      - name: Extract Version Name
-        id: get_version
+      - name: 🐘 Setup Gradle (No Cache)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # Explicitly disable caching as requested for a completely clean production build
+          cache-disabled: true
+
+      - name: 🏷️ Extract Version Information
+        id: extract_version
         run: |
-          # Dynamically extracts the versionName from build.gradle.kts
-          VERSION_NAME=$(grep "versionName =" app/build.gradle.kts | awk -F'"' '{print $2}')
+          # Robustly extract versionCode and versionName from app/build.gradle.kts
+          VERSION_CODE=$(grep -m 1 'versionCode\s*=\s*' app/build.gradle.kts | grep -o '[0-9]\+')
+          VERSION_NAME=$(grep -m 1 'versionName\s*=\s*' app/build.gradle.kts | cut -d'"' -f2)
+          
+          if [ -z "$VERSION_CODE" ] || [ -z "$VERSION_NAME" ]; then
+            echo "❌ Error: Could not extract version info!"
+            exit 1
+          fi
+          
+          echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
           echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          
+          # Configure variables based on the selected release channel
+          if [ "${{ github.event.inputs.release_type }}" == "stable" ]; then
+            echo "TAG_NAME=v${VERSION_NAME}" >> $GITHUB_ENV
+            echo "RELEASE_NAME=xDocUI v${VERSION_NAME} (Stable)" >> $GITHUB_ENV
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=v${VERSION_NAME}-rc" >> $GITHUB_ENV
+            echo "RELEASE_NAME=xDocUI v${VERSION_NAME} (Release Candidate)" >> $GITHUB_ENV
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          fi
 
-      - name: Decode Keystore
+      - name: 🔐 Decode Keystore
         env:
           ENCODED_KEYSTORE: ${{ secrets.SIGNING_KEY }}
         run: |
-          # Creates the keystore file from the base64 secret securely
           if [ ! -z "$ENCODED_KEYSTORE" ]; then
-            echo "$ENCODED_KEYSTORE" | base64 -d > keystore.jks
+            echo "$ENCODED_KEYSTORE" | base64 --decode > keystore.jks
+          else
+            echo "⚠️ Warning: SIGNING_KEY secret is not set. Build will use debug signing."
           fi
 
-      - name: Build Release and Debug APKs
+      - name: 🛠️ Build Optimized APK
         env:
           SIGNING_KEY_FILE: ${{ github.workspace }}/keystore.jks
           KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
@@ -49,16 +88,47 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease assembleDebug
+          # Clean build with parallel execution, explicitly disabling build-cache
+          ./gradlew clean assembleRelease --no-daemon --parallel --no-build-cache
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: 🧹 Secure Keystore Cleanup
+        if: always() # Ensure this runs even if the build fails
+        run: rm -f keystore.jks
+
+      - name: 📦 Locate and Rename APK
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "❌ Error: Release APK not found!"
+            exit 1
+          fi
+          
+          TARGET_NAME="xDocUI-${{ env.TAG_NAME }}.apk"
+          mv "$APK_PATH" "$TARGET_NAME"
+          echo "APK_FINAL_PATH=$TARGET_NAME" >> $GITHUB_ENV
+
+      - name: 📤 Upload Artifact (Actions Panel)
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v${{ env.VERSION_NAME }}
-          name: "xDocUI v${{ env.VERSION_NAME }}"
-          body: ${{ github.event.inputs.release_notes }}
-          files: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/apk/debug/*.apk
+          name: xDocUI-APK-${{ env.TAG_NAME }}
+          path: ${{ env.APK_FINAL_PATH }}
+          retention-days: 14 # Keep artifact for 14 days in the Actions tab
+
+      - name: 🎉 Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.RELEASE_NAME }}
+          prerelease: ${{ env.IS_PRERELEASE }}
+          generate_release_notes: true
+          body: |
+            ### 🚀 xDocUI Automated Release
+            
+            - **Version:** ${{ env.VERSION_NAME }} (Code: ${{ env.VERSION_CODE }})
+            - **Channel:** ${{ github.event.inputs.release_type }}
+            - **Build Configuration:** R8 Aggressive Shrinking, Obfuscated & Signed
+            
+            > **Note:** This module bypasses storage restrictions and forces persistent sorting in DocumentsUI. Requires a modern Xposed framework (LibXposed API 101).
+          files: ${{ env.APK_FINAL_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
