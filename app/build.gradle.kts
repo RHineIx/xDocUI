@@ -26,8 +26,8 @@ android {
         applicationId = "ix.xdocui"
         minSdk = 30
         targetSdk = 36
-        versionCode = 20005
-        versionName = "2.0.5"
+        versionCode = 20100
+        versionName = "2.1.0"
     }
 
     signingConfigs {

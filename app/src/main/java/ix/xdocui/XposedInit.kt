@@ -8,7 +8,6 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
-import android.util.Log
 import android.util.SparseArray
 import android.view.Menu
 import android.view.MenuItem
@@ -23,8 +22,6 @@ import io.github.libxposed.api.XposedModuleInterface
 class XposedInit : XposedModule() {
 
     companion object {
-        private const val TAG = "xDocUI"
-
         private const val DOCUMENTSUI_PACKAGE = "com.android.documentsui"
         private const val DOCUMENTSUI_GOOGLE_PACKAGE = "com.google.android.documentsui"
         private const val EXTERNAL_STORAGE_PACKAGE = "com.android.externalstorage"
@@ -40,21 +37,6 @@ class XposedInit : XposedModule() {
 
         @Volatile
         private var appContext: Context? = null
-    }
-
-    private fun xLog(msg: String, isError: Boolean = false, e: Throwable? = null) {
-        try {
-            val fullMsg = if (e != null) "$msg\n${Log.getStackTraceString(e)}" else msg
-            if (isError) {
-                log(Log.ERROR, TAG, fullMsg, e)
-                Log.e(TAG, fullMsg, e)
-            } else {
-                log(Log.INFO, TAG, fullMsg)
-                Log.i(TAG, fullMsg)
-            }
-        } catch (ignored: Throwable) {
-            if (isError) Log.e(TAG, msg, e) else Log.i(TAG, msg)
-        }
     }
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
@@ -215,7 +197,6 @@ class XposedInit : XposedModule() {
                     if (activity != null && activity.javaClass.name.startsWith("com.android.documentsui")) {
                         val intent = activity.intent
                         if (intent != null && intent.getBooleanExtra("xdocui_force_recreate", false)) {
-                            xLog("Intercepted onCreate() after forced recreate. Purging savedInstanceState bundle.")
                             val bundle = chain.args.firstOrNull() as? Bundle
                             bundle?.clear()
                             intent.removeExtra("xdocui_force_recreate")
@@ -266,6 +247,7 @@ class XposedInit : XposedModule() {
 
     private fun showPathDialog(activity: Activity) {
         activity.runOnUiThread {
+            // Build a stable layout programmatically
             val editText = EditText(activity).apply {
                 hint = "e.g. Download or Android/data"
                 maxLines = 1
@@ -282,7 +264,8 @@ class XposedInit : XposedModule() {
                 addView(editText)
             }
 
-            AlertDialog.Builder(activity)
+            // Fallback to standard system dialog to guarantee stability and prevent theme clashes
+            AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Jump to Path")
                 .setView(container)
                 .setPositiveButton("Go") { _, _ ->
@@ -297,55 +280,38 @@ class XposedInit : XposedModule() {
     }
 
     private fun navigateToPath(activity: Activity, path: String) {
-        xLog("=== Start Navigation Process ===")
-        xLog("User input path: $path")
-
         val uri = buildUriFromPath(path)
         if (uri == null) {
-            xLog("Failed to build URI. Invalid path format.", isError = true)
             Toast.makeText(activity, "Invalid path format.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        xLog("Successfully built Document URI: $uri")
-
-        // No background thread needed anymore since we just pass the URI directly to the ActionHandler!
         activity.runOnUiThread {
             try {
                 // 1. Get ActionHandler instance
                 var actions = activity.getFieldValue("mActions")
                 if (actions == null) {
-                    xLog("Field 'mActions' is null. Searching in 'mInjector'...")
                     val injector = activity.getFieldValue("mInjector")
                     actions = injector?.getFieldValue("actions")
                 }
                 if (actions == null) {
-                    xLog("Injector 'actions' is null. Assuming Activity implements ActionHandler...")
                     actions = activity
                 }
 
-                xLog("ActionHandler resolved to class: ${actions?.javaClass?.name}")
-
-                // 2. Direct Reflection Call based on user's Smali finding
+                // 2. Direct Reflection Call
                 val success = invokeLaunchToDocument(actions, uri)
 
                 // 3. Fallback Mechanism if reflection fails
                 if (!success) {
-                    xLog("Reflection approach failed. Initiating Force-Recreation Fallback...")
                     try {
                         activity.intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
                         activity.intent.putExtra("xdocui_force_recreate", true)
                         activity.recreate()
-                        xLog("Force-Recreation executed successfully.")
                     } catch (e: Exception) {
-                        xLog("Force-Recreation crashed!", isError = true, e = e)
                         Toast.makeText(activity, "Navigation failed.", Toast.LENGTH_SHORT).show()
                     }
-                } else {
-                    xLog("Reflection Navigation (launchToDocument) succeeded!")
                 }
             } catch (e: Exception) {
-                xLog("Fatal error during navigation", isError = true, e = e)
                 Toast.makeText(activity, "Error resolving path.", Toast.LENGTH_SHORT).show()
             }
         }
@@ -357,23 +323,20 @@ class XposedInit : XposedModule() {
 
         while (clazz != null) {
             try {
-                // The magic method discovered from decompiling!
+                // Target internal method
                 val method = clazz.getDeclaredMethod("launchToDocument", Uri::class.java)
                 method.isAccessible = true
 
-                xLog("Invoking magic method: ${method.name} on ${clazz.name}")
                 val result = method.invoke(actions, uri)
                 return (result as? Boolean) ?: true
             } catch (e: NoSuchMethodException) {
-                // Traverse up to superclass (e.g., AbstractActionHandler)
+                // Traverse up to superclass
                 clazz = clazz.superclass
             } catch (e: Exception) {
-                xLog("Exception thrown while invoking launchToDocument", isError = true, e = e)
                 return false
             }
         }
 
-        xLog("Method 'launchToDocument' not found in ActionHandler hierarchy.", isError = true)
         return false
     }
 
@@ -382,8 +345,6 @@ class XposedInit : XposedModule() {
 
         while (cleanPath.startsWith("/")) cleanPath = cleanPath.substring(1)
         while (cleanPath.endsWith("/")) cleanPath = cleanPath.substring(0, cleanPath.length - 1)
-
-        xLog("Normalized path string: $cleanPath")
 
         var docId = ""
 
@@ -417,7 +378,7 @@ class XposedInit : XposedModule() {
         try {
             block()
         } catch (e: Throwable) {
-            Log.e(TAG, "Operation failed: $hookName", e)
+            // Silently fail to keep logs completely clean for production
         }
     }
 
