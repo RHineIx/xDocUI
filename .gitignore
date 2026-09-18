@@ -84,3 +84,5 @@ lint/tmp/
 
 # androidide
 .androidide
+.clangd
+.clang-tidy

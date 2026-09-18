@@ -1,9 +1,8 @@
-import java.util.Properties
 import java.io.FileInputStream
+import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // Load local signing properties
@@ -14,9 +13,10 @@ if (keystorePropertiesFile.exists()) {
 }
 
 // Fetch credentials
-fun getSigningProp(propName: String, envName: String): String {
-    return System.getenv(envName) ?: keystoreProperties.getProperty(propName) ?: ""
-}
+fun getSigningProp(
+    propName: String,
+    envName: String,
+): String = System.getenv(envName) ?: keystoreProperties.getProperty(propName) ?: ""
 
 android {
     namespace = "ix.xdocui"
@@ -48,30 +48,28 @@ android {
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
-            signingConfig = if (getSigningProp("storeFile", "SIGNING_KEY_FILE").isNotEmpty()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig =
+                if (getSigningProp("storeFile", "SIGNING_KEY_FILE").isNotEmpty()) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
         }
         getByName("debug") {
-            signingConfig = if (getSigningProp("storeFile", "SIGNING_KEY_FILE").isNotEmpty()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig =
+                if (getSigningProp("storeFile", "SIGNING_KEY_FILE").isNotEmpty()) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
-    }
-
-    kotlinOptions {
-        jvmTarget = "21"
     }
 
     lint {
@@ -86,5 +84,5 @@ android {
 }
 
 dependencies {
-    compileOnly("io.github.libxposed:api:101.0.1")
+    compileOnly("io.github.libxposed:api:102.0.0")
 }
