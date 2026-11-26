@@ -9,7 +9,7 @@ plugins {
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
 if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    FileInputStream(keystorePropertiesFile).use(keystoreProperties::load)
 }
 
 // Fetch credentials
@@ -20,14 +20,14 @@ fun getSigningProp(
 
 android {
     namespace = "ix.xdocui"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "ix.xdocui"
         minSdk = 30
-        targetSdk = 36
-        versionCode = 20200
-        versionName = "2.2.0"
+        targetSdk = 37
+        versionCode = 20300
+        versionName = "2.3.0"
     }
 
     signingConfigs {

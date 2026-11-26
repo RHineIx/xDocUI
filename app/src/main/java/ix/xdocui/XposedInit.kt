@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.Cursor
 import android.util.Log
 import android.util.SparseArray
+import java.util.concurrent.ConcurrentHashMap
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
@@ -24,6 +25,11 @@ class XposedInit : XposedModule() {
 
         @Volatile
         private var appContext: Context? = null
+
+        private const val PREF_SORT_ID = "sort_dimension_id"
+        private const val PREF_SORT_DIRECTION = "sort_direction"
+        private const val SORT_ASCENDING = 1
+        private const val SORT_DESCENDING = 2
     }
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
@@ -35,10 +41,10 @@ class XposedInit : XposedModule() {
         }
     }
 
-    override fun onHotReloading(param: XposedModuleInterface.HotReloadingParam): Boolean {
-        // Explicitly approve hot-reload to allow dynamic module generation replacement
-        return true
-    }
+    // A fresh process is required until hook replacement is implemented for API 102.
+    override fun onHotReloading(param: XposedModuleInterface.HotReloadingParam): Boolean = false
+
+    private val reportedFailures = ConcurrentHashMap.newKeySet<String>()
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
         super.onPackageReady(param)
@@ -108,53 +114,53 @@ class XposedInit : XposedModule() {
             val lookupClass = param.classLoader.loadClass(LOOKUP_CLASS)
             val sortCursorMethod = sortModelClass.getDeclaredMethod("sortCursor", Cursor::class.java, lookupClass)
 
+            // Resolve the fields once rather than searching the hierarchy on every cursor.
+            val userSpecifiedField = sortModelClass.getDeclaredField("mIsUserSpecified").apply { isAccessible = true }
+            val dimensionsField = sortModelClass.getDeclaredField("mDimensions").apply { isAccessible = true }
+            val sortedField = sortModelClass.getDeclaredField("mSortedDimension").apply { isAccessible = true }
+            val directionField = sortedField.type.getDeclaredField("mSortDirection").apply { isAccessible = true }
+            val capabilityField = sortedField.type.getDeclaredField("mSortCapability").apply { isAccessible = true }
+
             hook(sortCursorMethod).intercept(object : XposedInterface.Hooker {
                 override fun intercept(chain: XposedInterface.Chain): Any? {
-                    val sortModel = chain.thisObject
-                    val context = appContext
-
-                    if (context != null) {
+                    runSafe("sortCursor/runtime") {
+                        val model = chain.thisObject ?: return@runSafe
+                        val context = appContext ?: return@runSafe
                         val prefs = context.getSharedPreferences("xDocUI_SortPrefs", Context.MODE_PRIVATE)
-                        val isUserSpecified = sortModel.getFieldValue("mIsUserSpecified") as? Boolean ?: false
-                        val dimensions = sortModel.getFieldValue("mDimensions") as? SparseArray<*>
-
-                        if (dimensions != null) {
-                            if (isUserSpecified) {
-                                val currentDim = sortModel.getFieldValue("mSortedDimension")
-                                if (currentDim != null) {
-                                    val direction = currentDim.getFieldValue("mSortDirection") as? Int ?: -1
-                                    var position = -1
-
-                                    for (i in 0 until dimensions.size()) {
-                                        if (dimensions.valueAt(i) === currentDim) {
-                                            position = i
-                                            break
-                                        }
-                                    }
-
-                                    if (position != -1) {
-                                        prefs.edit()
-                                            .putInt("sort_position", position)
-                                            .putInt("sort_direction", direction)
-                                            .apply()
-
-                                        sortModel.setFieldValue("mIsUserSpecified", false)
-                                    }
-                                }
-                            } else {
-                                val savedPos = prefs.getInt("sort_position", -1)
-                                val savedDir = prefs.getInt("sort_direction", -1)
-
-                                if (savedPos != -1 && savedDir != -1 && savedPos < dimensions.size()) {
-                                    val targetDim = dimensions.valueAt(savedPos)
-                                    if (targetDim != null) {
-                                        targetDim.setFieldValue("mSortDirection", savedDir)
-                                        sortModel.setFieldValue("mSortedDimension", targetDim)
-                                    }
-                                }
+                        val dimensions = dimensionsField.get(model) as? SparseArray<*> ?: return@runSafe
+                        if (userSpecifiedField.getBoolean(model)) {
+                            val current = sortedField.get(model) ?: return@runSafe
+                            val direction = directionField.getInt(current)
+                            val index = dimensions.indexOfValue(current)
+                            if (index < 0 || !validDirection(direction)) return@runSafe
+                            if ((capabilityField.getInt(current) and direction) == 0) return@runSafe
+                            val id = dimensions.keyAt(index)
+                            if (prefs.getInt(PREF_SORT_ID, Int.MIN_VALUE) != id ||
+                                prefs.getInt(PREF_SORT_DIRECTION, 0) != direction) {
+                                prefs.edit()
+                                    .putInt(PREF_SORT_ID, id)
+                                    .putInt(PREF_SORT_DIRECTION, direction)
+                                    .remove("sort_position")
+                                    .apply()
                             }
+                            userSpecifiedField.setBoolean(model, false)
+                        } else {
+                            // Ignore legacy position-only data: the index is not a stable identifier.
+                            if (!prefs.contains(PREF_SORT_ID)) return@runSafe
+                            val direction = prefs.getInt(PREF_SORT_DIRECTION, 0)
+                            if (!validDirection(direction)) return@runSafe
+                            val target = dimensions.get(prefs.getInt(PREF_SORT_ID, Int.MIN_VALUE))
+                                ?: return@runSafe
+                            if ((capabilityField.getInt(target) and direction) == 0) return@runSafe
+                            val previous = sortedField.get(model)
+                            if (previous !== target) {
+                                sortedField.set(model, target)
+                                if (previous != null) directionField.setInt(previous, 0)
+                            }
+                            directionField.setInt(target, direction)
                         }
                     }
+                    // Never catch or retry the original application's own cursor operation.
                     return chain.proceed()
                 }
             })
@@ -185,11 +191,17 @@ class XposedInit : XposedModule() {
         }
     }
 
+    private fun validDirection(direction: Int): Boolean =
+        direction == SORT_ASCENDING || direction == SORT_DESCENDING
+
     private inline fun runSafe(hookName: String, block: () -> Unit) {
         try {
             block()
         } catch (e: Throwable) {
-            // Silently fail to keep logs completely clean for production
+            if (e is VirtualMachineError || e is ThreadDeath) throw e
+            if (reportedFailures.add(hookName)) {
+                log(Log.WARN, "xDocUI", "$hookName failed: ${e.javaClass.simpleName}: ${e.message}")
+            }
         }
     }
 
@@ -208,18 +220,4 @@ class XposedInit : XposedModule() {
         return null
     }
 
-    private fun Any?.setFieldValue(fieldName: String, value: Any?) {
-        if (this == null) return
-        var clazz: Class<*>? = this.javaClass
-        while (clazz != null) {
-            try {
-                val field = clazz.getDeclaredField(fieldName)
-                field.isAccessible = true
-                field.set(this, value)
-                return
-            } catch (e: NoSuchFieldException) {
-                clazz = clazz.superclass
-            }
-        }
-    }
 }
