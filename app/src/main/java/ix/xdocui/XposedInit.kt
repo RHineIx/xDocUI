@@ -33,8 +33,6 @@ class XposedInit : XposedModule() {
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
         super.onModuleLoaded(param)
-        
-        // Ensure framework compatibility with API 102 requirements
         if (apiVersion < XposedInterface.API_102) {
             log(Log.WARN, "xDocUI", "This module requires libxposed API 102 or higher.")
         }
@@ -191,30 +189,26 @@ class XposedInit : XposedModule() {
             val loader = param.loader
             val bindings = try {
                 SortBindings.resolve(
-                namedModel = optionalClass(loader, SORT_MODEL_CLASS),
-                anchorModels = sequenceOf(
-                    "com.android.documentsui.base.State" to "sortModel",
-                    "com.android.documentsui.DirectoryLoader" to "mModel",
-                    "com.android.documentsui.sorting.SortListFragment" to "mModel",
-                ).mapNotNull { (owner, field) ->
-                    optionalClass(loader, owner)?.let { type ->
-                        try {
-                            type.getDeclaredField(field).type
-                        } catch (_: NoSuchFieldException) {
-                            null
+                    namedModel = optionalClass(loader, SORT_MODEL_CLASS),
+                    anchorModels = sequenceOf(
+                        "com.android.documentsui.base.State" to "sortModel",
+                        "com.android.documentsui.DirectoryLoader" to "mModel",
+                        "com.android.documentsui.sorting.SortListFragment" to "mModel",
+                    ).mapNotNull { (owner, field) ->
+                        optionalClass(loader, owner)?.let { type ->
+                            try {
+                                type.getDeclaredField(field).type
+                            } catch (_: NoSuchFieldException) {
+                                null
+                            }
                         }
-                    }
-                },
+                    },
                 )
-            } catch (error: ReflectiveOperationException) {
+            } catch (error: Exception) {
+                if (error !is ReflectiveOperationException && error !is IllegalArgumentException) throw error
                 if (!allowDex) return@runSafe
-                DexSortResolver.resolve(appContext ?: return@runSafe, param.info, loader) {
-                    event -> reportOnce("sort/dex/$event", "Sort: $event")
-                }
-            } catch (error: IllegalArgumentException) {
-                if (!allowDex) return@runSafe
-                DexSortResolver.resolve(appContext ?: return@runSafe, param.info, loader) {
-                    event -> reportOnce("sort/dex/$event", "Sort: $event")
+                DexSortResolver.resolve(appContext ?: return@runSafe, param.info, loader) { event ->
+                    reportOnce("sort/dex/$event", "Sort: $event")
                 }
             }
             val sortByUser = bindings.sortByUser
@@ -426,5 +420,4 @@ class XposedInit : XposedModule() {
         }
         return null
     }
-
 }

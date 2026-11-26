@@ -22,6 +22,7 @@ concurrency:
 
 jobs:
   build-and-release:
+    if: github.ref == 'refs/heads/main'
     name: 🔨 Build and Publish
     runs-on: ubuntu-latest
     timeout-minutes: 15 # Prevent hanging workflows
@@ -50,7 +51,6 @@ jobs:
           packages: "platform-tools platforms;android-37.0 build-tools;36.0.0"
 
       - name: 🏷️ Extract Version Information
-        id: extract_version
         run: |
           # Robustly extract versionCode and versionName from app/build.gradle.kts
           VERSION_CODE=$(grep -m 1 'versionCode\s*=\s*' app/build.gradle.kts | grep -o '[0-9]\+')
@@ -93,31 +93,29 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          chmod +x gradlew
-          # Clean build with parallel execution, explicitly disabling build-cache
-          ./gradlew clean assembleRelease --no-daemon --parallel --no-build-cache
+          bash ./gradlew clean testDebugUnitTest lintDebug assembleRelease --no-daemon --parallel --no-build-cache
 
       - name: 🧹 Secure Keystore Cleanup
         if: always() # Ensure this runs even if the build fails
         run: rm -f keystore.jks
 
+      - name: Verify release APK
+        run: python3 .github/scripts/verify_release.py app/build/outputs/apk/release
+
       - name: 📦 Locate and Rename APK
         run: |
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "❌ Error: Release APK not found!"
-            exit 1
-          fi
-          
-          TARGET_NAME="xDocUI-${{ env.TAG_NAME }}.apk"
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f)
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose "$APK_PATH"
+          TARGET_NAME="xDocUI-${{ env.TAG_NAME }}-arm64-v8a.apk"
           mv "$APK_PATH" "$TARGET_NAME"
           echo "APK_FINAL_PATH=$TARGET_NAME" >> $GITHUB_ENV
 
       - name: 📤 Upload Artifact (Actions Panel)
         uses: actions/upload-artifact@v4
         with:
-          name: xDocUI-APK-${{ env.TAG_NAME }}
+          name: xDocUI-APK-${{ env.TAG_NAME }}-arm64-v8a
           path: ${{ env.APK_FINAL_PATH }}
+          if-no-files-found: error
           retention-days: 14 # Keep artifact for 14 days in the Actions tab
 
       - name: 🎉 Publish GitHub Release
@@ -132,7 +130,10 @@ jobs:
             
             - **Version:** ${{ env.VERSION_NAME }} (Code: ${{ env.VERSION_CODE }})
             - **Channel:** ${{ github.event.inputs.release_type }}
-            - **Build Configuration:** R8 Aggressive Shrinking, Obfuscated & Signed
+            - **ABI:** arm64-v8a only
+            - **Build Configuration:** R8 optimized, obfuscated and signed
+            - **Sorting:** Native transitions, structural resolution and lazy DexKit fallback
+            - **Framework:** Modern libxposed API 102
             
             > **Note:** This module bypasses storage restrictions and forces persistent sorting in DocumentsUI. Requires a modern Xposed framework (LibXposed API 102).
           files: ${{ env.APK_FINAL_PATH }}

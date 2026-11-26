@@ -5,14 +5,12 @@ plugins {
     id("com.android.application")
 }
 
-// Load local signing properties
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
 if (keystorePropertiesFile.exists()) {
     FileInputStream(keystorePropertiesFile).use(keystoreProperties::load)
 }
 
-// Fetch credentials
 fun getSigningProp(
     propName: String,
     envName: String,
@@ -44,6 +42,9 @@ android {
 
     buildTypes {
         getByName("release") {
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -76,11 +77,6 @@ android {
         checkReleaseBuilds = false
     }
 
-    sourceSets {
-        getByName("main") {
-            resources.srcDir("src/main/resources")
-        }
-    }
 }
 
 dependencies {
