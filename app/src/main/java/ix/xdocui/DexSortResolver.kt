@@ -18,8 +18,9 @@ internal object DexSortResolver {
     ): SortBindings {
         val prefs = context.getSharedPreferences("xDocUI_DexBindings", Context.MODE_PRIVATE)
         val key = DexFingerprint.key(context, info)
-        val cached = prefs.getString("mapping", null)
-        if (prefs.getString("key", null) == key && cached != null) {
+        val snapshot = prefs.all
+        val cached = snapshot["mapping"] as? String
+        if (snapshot["key"] == key && cached != null) {
             try {
                 val parts = cached.split('|')
                 require(parts.size == 4)
@@ -43,33 +44,40 @@ internal object DexSortResolver {
         for (path in paths) {
             if (!DexFingerprint.hasDex(path)) continue
             DexKitBridge.create(path).use { bridge ->
-                val save = bridge.findMethod {
+                val saves = bridge.findMethod {
                     matcher {
                         returnType = "void"
                         paramTypes("int", "int")
                         usingStrings("Unknown column id: ")
                     }
-                }.singleOrNull() ?: return@use
-                val restore = bridge.findMethod {
+                }
+                val restores = bridge.findMethod {
                     matcher {
                         returnType = "void"
                         paramCount = 0
                         usingStrings("No default sort dimension.")
                     }
-                }.singleOrNull() ?: return@use
-                val transition = bridge.findMethod {
+                }
+                val transitions = bridge.findMethod {
                     matcher {
                         returnType = "void"
                         paramTypes(null, "int")
                         usingStrings("Unknown sort direction: ", " can't be sorted in direction:")
                     }
-                }.singleOrNull() ?: return@use
+                }
+                // A duplicated fingerprint anywhere in a code-bearing split is ambiguous.
+                require(saves.size <= 1 && restores.size <= 1 && transitions.size <= 1) {
+                    "Ambiguous DEX fingerprints"
+                }
+                val save = saves.singleOrNull() ?: return@use
+                val restore = restores.singleOrNull() ?: return@use
+                val transition = transitions.singleOrNull() ?: return@use
                 val methods = listOf(save, restore, transition)
                 if (methods.map { it.className }.distinct().size != 1 ||
                     methods.any { Modifier.isStatic(it.modifiers) || Modifier.isAbstract(it.modifiers) } ||
                     !calls(save, transition) || !calls(restore, transition)) return@use
                 matches += save.className to TransitionNames(
-                    save.name, restore.name, transition.name,
+                    save.methodName, restore.methodName, transition.methodName,
                 )
             }
         }

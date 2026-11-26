@@ -65,7 +65,8 @@ class XposedInit : XposedModule() {
         previousHooks = param.oldHookHandles.toMutableList()
         try {
             val state = param.savedInstanceState as? Array<*>
-            require(state?.size == 5 && state[0] == "xdocui-reload-v1") { "Unsupported reload state" }
+                ?: error("Missing reload state")
+            require(state.size == 5 && state[0] == "xdocui-reload-v1") { "Unsupported reload state" }
             val packageName = state[1] as String
             val info = state[2] as ApplicationInfo
             val loader = state[3] as ClassLoader
@@ -75,6 +76,9 @@ class XposedInit : XposedModule() {
             target = Target(packageName, info, loader)
             initialize(target!!)
             reportOnce("reload/rebound", "Hot reload: target initialization replayed")
+            if (packageName != EXTERNAL_STORAGE_PACKAGE && !sortInstalled) {
+                log(Log.WARN, "xDocUI", "Hot reload: sorting unavailable; stock behavior retained")
+            }
         } finally {
             // Remove every obsolete handle; no old-generation callback is retained deliberately.
             previousHooks?.forEach { handle ->
