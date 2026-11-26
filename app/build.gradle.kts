@@ -16,6 +16,27 @@ fun getSigningProp(
     envName: String,
 ): String = System.getenv(envName) ?: keystoreProperties.getProperty(propName) ?: ""
 
+// Release tags are the source of truth; ordinary local/CI builds use a default.
+val releaseTag = providers.gradleProperty("releaseTag")
+    .orElse(providers.environmentVariable("GITHUB_REF_TYPE").flatMap { type ->
+        if (type == "tag") providers.environmentVariable("GITHUB_REF_NAME")
+        else providers.gradleProperty("xdocuiLocalTag").orElse("v2.3.0")
+    })
+    .orElse(providers.gradleProperty("xdocuiLocalTag"))
+    .orElse("v2.3.0")
+    .get()
+val versionMatch = requireNotNull(
+    Regex("""v(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)(-rc)?""").matchEntire(releaseTag)
+) { "Invalid release tag: $releaseTag (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc)" }
+val (majorText, minorText, patchText) = versionMatch.destructured
+val major = majorText.toLongOrNull() ?: error("Version major is too large")
+val minor = minorText.toLong()
+val patch = patchText.toLong()
+require(major <= 210000L) { "Version major exceeds Android versionCode range" }
+val computedVersionCode = major * 10000L + minor * 100L + patch
+require(computedVersionCode in 1L..2100000000L) { "Invalid Android versionCode: $computedVersionCode" }
+val computedVersionName = "$majorText.$minorText.$patchText"
+
 android {
     namespace = "ix.xdocui"
     compileSdk = 37
@@ -24,8 +45,8 @@ android {
         applicationId = "ix.xdocui"
         minSdk = 30
         targetSdk = 37
-        versionCode = 20300
-        versionName = "2.3.0"
+        versionCode = computedVersionCode.toInt()
+        versionName = computedVersionName
     }
 
     signingConfigs {

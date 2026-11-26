@@ -27,7 +27,14 @@ JDK 21, Android SDK 37, AGP 9.5.3, Gradle 9.9.2 (checksum-pinned wrapper), libxp
 python3 .github/scripts/verify_release.py app/build/outputs/apk/release
 ```
 
-PR CI builds a test APK without production signing credentials. The manual release workflow runs only on main, requires the existing signing secrets, verifies the single ARM64 APK and its signature, and publishes `xDocUI-v<version>-arm64-v8a.apk`. Debug builds are not ABI-restricted by this project.
+PR CI builds a test APK without production signing credentials. The release workflow runs automatically when a new `v*` tag is pushed on a commit from main. The tag sets the APK version automatically: `v2.3.0` produces versionName `2.3.0` and versionCode `20300` (`major * 10000 + minor * 100 + patch`). Minor and patch must be 0–99; Android versionCode limits apply. A `-rc` suffix selects a pre-release with the same numeric APK version. No Gradle version edit is needed. Local/PR builds default to `v2.3.0`; override with `-PreleaseTag=v2.4.0` if needed. It requires the existing signing secrets, verifies the single ARM64 APK and its signature, and publishes `xDocUI-v<version>-arm64-v8a.apk`. Debug builds are not ABI-restricted by this project.
+
+To release the current version, after merging and verifying main:
+
+```bash
+git tag v2.3.0
+git push origin v2.3.0
+```
 
 ## Compatibility and design
 
