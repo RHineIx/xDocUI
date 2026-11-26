@@ -131,8 +131,10 @@ class XposedInit : XposedModule() {
                         if (userSpecifiedField.getBoolean(model)) {
                             val current = sortedField.get(model) ?: return@runSafe
                             val direction = directionField.getInt(current)
-                            val index = dimensions.indexOfValue(current)
-                            if (index < 0 || !validDirection(direction)) return@runSafe
+                            if (!validDirection(direction)) return@runSafe
+                            val index = (0 until dimensions.size()).firstOrNull {
+                                dimensions.valueAt(it) === current
+                            } ?: return@runSafe
                             if ((capabilityField.getInt(current) and direction) == 0) return@runSafe
                             val id = dimensions.keyAt(index)
                             if (prefs.getInt(PREF_SORT_ID, Int.MIN_VALUE) != id ||
