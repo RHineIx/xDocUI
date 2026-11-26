@@ -44,8 +44,10 @@ jobs:
           # Explicitly disable caching as requested for a completely clean production build
           cache-disabled: true
 
-      - name: Install Android SDK
-        run: sdkmanager "platforms;android-37"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-37 build-tools;36.0.0"
 
       - name: 🏷️ Extract Version Information
         id: extract_version

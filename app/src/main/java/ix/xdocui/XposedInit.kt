@@ -1,9 +1,9 @@
 package ix.xdocui
 
 import android.content.Context
-import android.database.Cursor
 import android.util.Log
-import android.util.SparseArray
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
@@ -21,12 +21,13 @@ class XposedInit : XposedModule() {
         private const val EXTERNAL_STORAGE_PROVIDER_CLASS = "com.android.externalstorage.ExternalStorageProvider"
 
         private const val SORT_MODEL_CLASS = "com.android.documentsui.sorting.SortModel"
-        private const val LOOKUP_CLASS = "com.android.documentsui.base.Lookup"
+        private const val DOCUMENTS_APPLICATION_CLASS = "com.android.documentsui.DocumentsApplication"
+        private const val SORT_DIMENSION_CLASS = "com.android.documentsui.sorting.SortDimension"
 
         @Volatile
         private var appContext: Context? = null
 
-        private const val PREF_SORT_ID = "sort_dimension_id"
+        private const val PREF_SORT_LABEL = "sort_label_entry"
         private const val PREF_SORT_DIRECTION = "sort_direction"
         private const val SORT_ASCENDING = 1
         private const val SORT_DESCENDING = 2
@@ -68,16 +69,15 @@ class XposedInit : XposedModule() {
 
     private fun captureAppContext(param: XposedModuleInterface.PackageReadyParam) {
         runSafe("captureAppContext") {
-            val appClass = param.classLoader.loadClass("android.app.Application")
+            val appClass = param.classLoader.loadClass(DOCUMENTS_APPLICATION_CLASS)
             val onCreateMethod = appClass.getDeclaredMethod("onCreate")
 
             hook(onCreateMethod).intercept(object : XposedInterface.Hooker {
                 override fun intercept(chain: XposedInterface.Chain): Any? {
-                    val result = chain.proceed()
                     if (appContext == null) {
                         appContext = chain.thisObject as? Context
                     }
-                    return result
+                    return chain.proceed()
                 }
             })
             deoptimize(onCreateMethod)
@@ -109,65 +109,120 @@ class XposedInit : XposedModule() {
     }
 
     private fun hookRememberGlobalSort(param: XposedModuleInterface.PackageReadyParam) {
-        runSafe("sortCursor") {
-            val sortModelClass = param.classLoader.loadClass(SORT_MODEL_CLASS)
-            val lookupClass = param.classLoader.loadClass(LOOKUP_CLASS)
-            val sortCursorMethod = sortModelClass.getDeclaredMethod("sortCursor", Cursor::class.java, lookupClass)
+        runSafe("persistentSort/install") {
+            val model = param.classLoader.loadClass(SORT_MODEL_CLASS)
+            val dimension = param.classLoader.loadClass(SORT_DIMENSION_CLASS)
+            val intType = Int::class.javaPrimitiveType!!
+            val sortByUser = model.checkedMethod("sortByUser", Void.TYPE, intType, intType)
+            val sortOnDefault = model.checkedMethod("sortOnDefault", Void.TYPE)
+            val sortByDimension = model.checkedMethod("sortByDimension", Void.TYPE, dimension, intType)
+            val getSortedDimension = model.checkedMethod("getSortedDimension", dimension)
+            val getSize = model.checkedMethod("getSize", intType)
+            val getDimensionAt = model.checkedMethod("getDimensionAt", dimension, intType)
+            val getId = dimension.checkedMethod("getId", intType)
+            val getLabel = dimension.checkedMethod("getLabelId", intType)
+            val getDirection = dimension.checkedMethod("getSortDirection", intType)
+            val getCapability = dimension.checkedMethod("getSortCapability", intType)
+            val getVisibility = dimension.checkedMethod("getVisibility", intType)
+            val userSpecified = model.getDeclaredField("mIsUserSpecified").apply {
+                require(type == Boolean::class.javaPrimitiveType)
+                isAccessible = true
+            }
 
-            // Resolve the fields once rather than searching the hierarchy on every cursor.
-            val userSpecifiedField = sortModelClass.getDeclaredField("mIsUserSpecified").apply { isAccessible = true }
-            val dimensionsField = sortModelClass.getDeclaredField("mDimensions").apply { isAccessible = true }
-            val sortedField = sortModelClass.getDeclaredField("mSortedDimension").apply { isAccessible = true }
-            val directionField = sortedField.type.getDeclaredField("mSortDirection").apply { isAccessible = true }
-            val capabilityField = sortedField.type.getDeclaredField("mSortCapability").apply { isAccessible = true }
+            fun labelOf(context: Context, item: Any): String? {
+                val id = getLabel.invoke(item) as Int
+                return try {
+                    context.resources.getResourceEntryName(id)
+                } catch (_: android.content.res.Resources.NotFoundException) {
+                    null
+                }
+            }
 
-            hook(sortCursorMethod).intercept(object : XposedInterface.Hooker {
+            // Capture only an actual, successful user action, never a cursor refresh.
+            hook(sortByUser).intercept(object : XposedInterface.Hooker {
                 override fun intercept(chain: XposedInterface.Chain): Any? {
-                    runSafe("sortCursor/runtime") {
-                        val model = chain.thisObject ?: return@runSafe
+                    val result = chain.proceed()
+                    runSafe("persistentSort/save") {
+                        val instance = chain.thisObject ?: return@runSafe
                         val context = appContext ?: return@runSafe
+                        val requestedId = chain.args.getOrNull(0) as? Int ?: return@runSafe
+                        val requestedDirection = chain.args.getOrNull(1) as? Int ?: return@runSafe
+                        if (!validDirection(requestedDirection)) return@runSafe
+                        val current = getSortedDimension.invoke(instance) ?: return@runSafe
+                        if (getId.invoke(current) != requestedId ||
+                            getDirection.invoke(current) != requestedDirection ||
+                            ((getCapability.invoke(current) as Int) and requestedDirection) == 0) {
+                            return@runSafe
+                        }
+                        val label = labelOf(context, current) ?: return@runSafe
                         val prefs = context.getSharedPreferences("xDocUI_SortPrefs", Context.MODE_PRIVATE)
-                        val dimensions = dimensionsField.get(model) as? SparseArray<*> ?: return@runSafe
-                        if (userSpecifiedField.getBoolean(model)) {
-                            val current = sortedField.get(model) ?: return@runSafe
-                            val direction = directionField.getInt(current)
-                            if (!validDirection(direction)) return@runSafe
-                            val index = (0 until dimensions.size()).firstOrNull {
-                                dimensions.valueAt(it) === current
-                            } ?: return@runSafe
-                            if ((capabilityField.getInt(current) and direction) == 0) return@runSafe
-                            val id = dimensions.keyAt(index)
-                            if (prefs.getInt(PREF_SORT_ID, Int.MIN_VALUE) != id ||
-                                prefs.getInt(PREF_SORT_DIRECTION, 0) != direction) {
-                                prefs.edit()
-                                    .putInt(PREF_SORT_ID, id)
-                                    .putInt(PREF_SORT_DIRECTION, direction)
-                                    .remove("sort_position")
-                                    .apply()
-                            }
-                            userSpecifiedField.setBoolean(model, false)
-                        } else {
-                            // Ignore legacy position-only data: the index is not a stable identifier.
-                            if (!prefs.contains(PREF_SORT_ID)) return@runSafe
-                            val direction = prefs.getInt(PREF_SORT_DIRECTION, 0)
-                            if (!validDirection(direction)) return@runSafe
-                            val target = dimensions.get(prefs.getInt(PREF_SORT_ID, Int.MIN_VALUE))
-                                ?: return@runSafe
-                            if ((capabilityField.getInt(target) and direction) == 0) return@runSafe
-                            val previous = sortedField.get(model)
-                            if (previous !== target) {
-                                sortedField.set(model, target)
-                                if (previous != null) directionField.setInt(previous, 0)
-                            }
-                            directionField.setInt(target, direction)
+                        if (prefs.getString(PREF_SORT_LABEL, null) != label ||
+                            prefs.getInt(PREF_SORT_DIRECTION, 0) != requestedDirection) {
+                            prefs.edit()
+                                .putString(PREF_SORT_LABEL, label)
+                                .putInt(PREF_SORT_DIRECTION, requestedDirection)
+                                .remove("sort_position")
+                                .remove("sort_dimension_id")
+                                .apply()
                         }
                     }
-                    // Never catch or retry the original application's own cursor operation.
-                    return chain.proceed()
+                    return result
                 }
             })
-            deoptimize(sortCursorMethod)
+            deoptimize(sortByUser)
+
+            // Resolve the current resource label to its actual dimension and use
+            // DocumentsUI's native sorting transition, including listener updates.
+            hook(sortOnDefault).intercept(object : XposedInterface.Hooker {
+                override fun intercept(chain: XposedInterface.Chain): Any? {
+                    var selected: Any? = null
+                    var direction = 0
+                    val instance = chain.thisObject ?: return chain.proceed()
+                    runSafe("persistentSort/resolve") {
+                        val context = appContext ?: return@runSafe
+                        if (userSpecified.getBoolean(instance)) return@runSafe
+                        val prefs = context.getSharedPreferences("xDocUI_SortPrefs", Context.MODE_PRIVATE)
+                        val label = prefs.getString(PREF_SORT_LABEL, null) ?: return@runSafe
+                        val savedDirection = prefs.getInt(PREF_SORT_DIRECTION, 0)
+                        if (!validDirection(savedDirection)) return@runSafe
+                        val count = getSize.invoke(instance) as Int
+                        if (count !in 1..128) return@runSafe
+                        val matches = (0 until count).mapNotNull { getDimensionAt.invoke(instance, it) }
+                            .filter { labelOf(context, it) == label }
+                        val target = matches.singleOrNull() ?: return@runSafe
+                        if ((getVisibility.invoke(target) as Int) != android.view.View.VISIBLE ||
+                            ((getCapability.invoke(target) as Int) and savedDirection) == 0) {
+                            return@runSafe
+                        }
+                        direction = savedDirection
+                        selected = target
+                    }
+                    val target = selected ?: return chain.proceed()
+                    // Do not retry the original operation if the native method
+                    // itself throws after mutating state or notifying listeners.
+                    try {
+                        sortByDimension.invoke(instance, target, direction)
+                    } catch (error: InvocationTargetException) {
+                        throw (error.cause ?: error)
+                    } catch (_: IllegalAccessException) {
+                        return chain.proceed()
+                    }
+                    return null
+                }
+            })
+            deoptimize(sortOnDefault)
+            log(Log.INFO, "xDocUI", "Persistent sorting hooks installed (native model transitions)")
         }
+    }
+
+    private fun Class<*>.checkedMethod(
+        name: String,
+        returnType: Class<*>,
+        vararg parameters: Class<*>,
+    ): Method = getDeclaredMethod(name, *parameters).apply {
+        require(this.returnType == returnType) { "Unexpected return type for $name" }
+        require(!java.lang.reflect.Modifier.isStatic(modifiers)) { "Unexpected static method: $name" }
+        isAccessible = true
     }
 
     private fun hookExternalStorage(param: XposedModuleInterface.PackageReadyParam) {
