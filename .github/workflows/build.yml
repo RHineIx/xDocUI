@@ -44,6 +44,11 @@ jobs:
           # Explicitly disable caching as requested for a completely clean production build
           cache-disabled: true
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-37.0 build-tools;36.0.0"
+
       - name: 🏷️ Extract Version Information
         id: extract_version
         run: |
@@ -77,7 +82,8 @@ jobs:
           if [ ! -z "$ENCODED_KEYSTORE" ]; then
             echo "$ENCODED_KEYSTORE" | base64 --decode > keystore.jks
           else
-            echo "⚠️ Warning: SIGNING_KEY secret is not set. Build will use debug signing."
+            echo "::error::SIGNING_KEY is required to publish a release."
+            exit 1
           fi
 
       - name: 🛠️ Build Optimized APK
@@ -128,7 +134,7 @@ jobs:
             - **Channel:** ${{ github.event.inputs.release_type }}
             - **Build Configuration:** R8 Aggressive Shrinking, Obfuscated & Signed
             
-            > **Note:** This module bypasses storage restrictions and forces persistent sorting in DocumentsUI. Requires a modern Xposed framework (LibXposed API 101).
+            > **Note:** This module bypasses storage restrictions and forces persistent sorting in DocumentsUI. Requires a modern Xposed framework (LibXposed API 102).
           files: ${{ env.APK_FINAL_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
