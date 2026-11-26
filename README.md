@@ -36,3 +36,11 @@ The Android 17 Files APK supplied for inspection exposes `sortByUser(int,int)`, 
 ## Diagnostics and tests
 
 The module emits bounded, once-per-process messages for context initialization, preference save/restore and fallback conditions. No document names or paths are logged by these diagnostics. The pure sort-selection policy is covered by JVM tests for resource-ID changes, duplicate/missing/hidden labels, capability masks and invalid input. Run `./gradlew testDebugUnitTest`.
+
+## Sorting hook resilience
+
+- Resolve the Application class from package metadata, with the known DocumentsUI name as the missing-metadata fallback.
+- Resolve the dimension type from the model's actual return type and validate all methods before hooking.
+- If the known model class is absent, require two or more matching field-type anchors in State, DirectoryLoader and SortListFragment. Conflicting or incomplete anchors leave stock sorting untouched. This does not handle arbitrary method/field obfuscation.
+- Install save/restore as a pair with API 102 hook IDs. If registration fails, both callbacks remain inactive and any installed handles are removed. A failed deoptimization is reported separately, not treated as proof of a working hook.
+- Four additional JVM tests cover class-name independence, anchor agreement and rejection of incompatible bindings. Storage hooks and scope are unchanged.
