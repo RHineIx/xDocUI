@@ -31,4 +31,8 @@ Production publication requires the existing release signing secrets.
 
 ## Compatibility notes
 
-The Android 17 Files APK supplied for inspection exposes `sortByUser(int,int)`, `sortOnDefault()`, `sortByDimension(SortDimension,int)` and the expected accessor methods. Both cursor overloads and provider query sorting use the model's state. This is a signature-checked reflection implementation, not a general obfuscation-resistant resolver. Runtime testing is still required.
+The Android 17 Files APK supplied for inspection exposes `sortByUser(int,int)`, `sortOnDefault()`, `sortByDimension(SortDimension,int)` and the expected accessor methods. Both cursor overloads and provider query sorting use the model's state. This is a signature-checked reflection implementation, not a general obfuscation-resistant resolver. The v2.3.0 native sorting flow was confirmed by the maintainer on OnePlus 15 / ColorOS 17. Subsequent changes still require runtime testing.
+
+## Diagnostics and tests
+
+The module emits bounded, once-per-process messages for context initialization, preference save/restore and fallback conditions. No document names or paths are logged by these diagnostics. The pure sort-selection policy is covered by JVM tests for resource-ID changes, duplicate/missing/hidden labels, capability masks and invalid input. Run `./gradlew testDebugUnitTest`.

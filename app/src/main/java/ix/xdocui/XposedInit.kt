@@ -29,8 +29,7 @@ class XposedInit : XposedModule() {
 
         private const val PREF_SORT_LABEL = "sort_label_entry"
         private const val PREF_SORT_DIRECTION = "sort_direction"
-        private const val SORT_ASCENDING = 1
-        private const val SORT_DESCENDING = 2
+        private const val SORT_PREFS = "xDocUI_SortPrefs"
     }
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
@@ -46,6 +45,11 @@ class XposedInit : XposedModule() {
     override fun onHotReloading(param: XposedModuleInterface.HotReloadingParam): Boolean = false
 
     private val reportedFailures = ConcurrentHashMap.newKeySet<String>()
+    private val reportedEvents = ConcurrentHashMap.newKeySet<String>()
+
+    private fun reportOnce(event: String, message: String) {
+        if (reportedEvents.add(event)) log(Log.INFO, "xDocUI", message)
+    }
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
         super.onPackageReady(param)
@@ -76,11 +80,13 @@ class XposedInit : XposedModule() {
                 override fun intercept(chain: XposedInterface.Chain): Any? {
                     if (appContext == null) {
                         appContext = chain.thisObject as? Context
+                        if (appContext != null) reportOnce("sort/context", "Sort: application context ready")
                     }
                     return chain.proceed()
                 }
             })
             deoptimize(onCreateMethod)
+            reportOnce("sort/context-hook", "Sort: application context hook installed")
         }
     }
 
@@ -144,10 +150,13 @@ class XposedInit : XposedModule() {
                     val result = chain.proceed()
                     runSafe("persistentSort/save") {
                         val instance = chain.thisObject ?: return@runSafe
-                        val context = appContext ?: return@runSafe
+                        val context = appContext ?: run {
+                            reportOnce("sort/save-no-context", "Sort: save skipped; context unavailable")
+                            return@runSafe
+                        }
                         val requestedId = chain.args.getOrNull(0) as? Int ?: return@runSafe
                         val requestedDirection = chain.args.getOrNull(1) as? Int ?: return@runSafe
-                        if (!validDirection(requestedDirection)) return@runSafe
+                        if (!SortPolicy.validDirection(requestedDirection)) return@runSafe
                         val current = getSortedDimension.invoke(instance) ?: return@runSafe
                         if (getId.invoke(current) != requestedId ||
                             getDirection.invoke(current) != requestedDirection ||
@@ -155,9 +164,10 @@ class XposedInit : XposedModule() {
                             return@runSafe
                         }
                         val label = labelOf(context, current) ?: return@runSafe
-                        val prefs = context.getSharedPreferences("xDocUI_SortPrefs", Context.MODE_PRIVATE)
-                        if (prefs.getString(PREF_SORT_LABEL, null) != label ||
-                            prefs.getInt(PREF_SORT_DIRECTION, 0) != requestedDirection) {
+                        val prefs = context.getSharedPreferences(SORT_PREFS, Context.MODE_PRIVATE)
+                        val stored = prefs.all
+                        if (stored[PREF_SORT_LABEL] != label ||
+                            stored[PREF_SORT_DIRECTION] != requestedDirection) {
                             prefs.edit()
                                 .putString(PREF_SORT_LABEL, label)
                                 .putInt(PREF_SORT_DIRECTION, requestedDirection)
@@ -165,6 +175,7 @@ class XposedInit : XposedModule() {
                                 .remove("sort_dimension_id")
                                 .apply()
                         }
+                        reportOnce("sort/saved", "Sort: user preference saved")
                     }
                     return result
                 }
@@ -179,19 +190,31 @@ class XposedInit : XposedModule() {
                     var direction = 0
                     val instance = chain.thisObject ?: return chain.proceed()
                     runSafe("persistentSort/resolve") {
-                        val context = appContext ?: return@runSafe
+                        val context = appContext ?: run {
+                            reportOnce("sort/restore-no-context", "Sort: restore skipped; context unavailable")
+                            return@runSafe
+                        }
                         if (userSpecified.getBoolean(instance)) return@runSafe
-                        val prefs = context.getSharedPreferences("xDocUI_SortPrefs", Context.MODE_PRIVATE)
-                        val label = prefs.getString(PREF_SORT_LABEL, null) ?: return@runSafe
-                        val savedDirection = prefs.getInt(PREF_SORT_DIRECTION, 0)
-                        if (!validDirection(savedDirection)) return@runSafe
+                        // Read both preference values from a single synchronized snapshot.
+                        val stored = context.getSharedPreferences(SORT_PREFS, Context.MODE_PRIVATE).all
+                        val label = stored[PREF_SORT_LABEL] as? String ?: return@runSafe
+                        val savedDirection = stored[PREF_SORT_DIRECTION] as? Int ?: return@runSafe
+                        if (!SortPolicy.validDirection(savedDirection)) return@runSafe
                         val count = getSize.invoke(instance) as Int
-                        if (count !in 1..128) return@runSafe
-                        val matches = (0 until count).mapNotNull { getDimensionAt.invoke(instance, it) }
-                            .filter { labelOf(context, it) == label }
-                        val target = matches.singleOrNull() ?: return@runSafe
-                        if ((getVisibility.invoke(target) as Int) != android.view.View.VISIBLE ||
-                            ((getCapability.invoke(target) as Int) and savedDirection) == 0) {
+                        if (!SortPolicy.validCount(count)) {
+                            reportOnce("sort/count", "Sort: unexpected dimension count; using stock default")
+                            return@runSafe
+                        }
+                        val candidates = (0 until count).asSequence()
+                            .mapNotNull { getDimensionAt.invoke(instance, it) }
+                        val target = SortPolicy.select(
+                            candidates, label, savedDirection,
+                            labelOf = { labelOf(context, it) },
+                            isVisible = { getVisibility.invoke(it) == android.view.View.VISIBLE },
+                            capabilityOf = { getCapability.invoke(it) as Int },
+                        )
+                        if (target == null) {
+                            reportOnce("sort/no-match", "Sort: saved dimension missing, ambiguous or unsupported; using stock default")
                             return@runSafe
                         }
                         direction = savedDirection
@@ -202,9 +225,11 @@ class XposedInit : XposedModule() {
                     // itself throws after mutating state or notifying listeners.
                     try {
                         sortByDimension.invoke(instance, target, direction)
+                        reportOnce("sort/restored", "Sort: saved preference restored")
                     } catch (error: InvocationTargetException) {
                         throw (error.cause ?: error)
                     } catch (_: IllegalAccessException) {
+                        reportOnce("sort/access", "Sort: native transition inaccessible; using stock default")
                         return chain.proceed()
                     }
                     return null
@@ -247,9 +272,6 @@ class XposedInit : XposedModule() {
             }
         }
     }
-
-    private fun validDirection(direction: Int): Boolean =
-        direction == SORT_ASCENDING || direction == SORT_DESCENDING
 
     private inline fun runSafe(hookName: String, block: () -> Unit) {
         try {
