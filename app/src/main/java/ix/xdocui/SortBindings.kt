@@ -37,7 +37,16 @@ internal class SortBindings private constructor(
             return bind(anchors.first(), "structural")
         }
 
-        private fun bind(model: Class<*>, source: String): SortBindings {
+        fun fromFingerprint(model: Class<*>, names: TransitionNames, source: String): SortBindings {
+            require(names.isValid()) { "Invalid transition mapping" }
+            return bind(model, source, names)
+        }
+
+        private fun bind(
+            model: Class<*>,
+            source: String,
+            names: TransitionNames = TransitionNames("sortByUser", "sortOnDefault", "sortByDimension"),
+        ): SortBindings {
             val intType = Int::class.javaPrimitiveType!!
             val sorted = model.getDeclaredMethod("getSortedDimension")
             val dimension = sorted.returnType
@@ -55,9 +64,9 @@ internal class SortBindings private constructor(
             }
             return SortBindings(
                 source = source,
-                sortByUser = model.checked("sortByUser", Void.TYPE, intType, intType),
-                sortOnDefault = model.checked("sortOnDefault", Void.TYPE),
-                sortByDimension = model.checked("sortByDimension", Void.TYPE, dimension, intType),
+                sortByUser = model.checked(names.save, Void.TYPE, intType, intType),
+                sortOnDefault = model.checked(names.restore, Void.TYPE),
+                sortByDimension = model.checked(names.transition, Void.TYPE, dimension, intType),
                 getSortedDimension = getSortedDimension,
                 getSize = model.checked("getSize", intType),
                 getDimensionAt = getDimensionAt,
